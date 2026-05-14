@@ -69,6 +69,8 @@ def init_session():
         "log_messages": [],
         "last_run_stats": None,
         "override_edits": {},
+        "pipeline_result": None,
+        "pipeline_error": None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -210,10 +212,6 @@ with tab_run:
     log_placeholder = st.empty()
     status_placeholder = st.empty()
 
-    def update_log(source_id: str, stage: str):
-        msg = f"[{datetime.now().strftime('%H:%M:%S')}] {source_id} → {stage}"
-        st.session_state.log_messages.append(msg)
-
     if st.button(
         "🚀 Start Pipeline",
         type="primary",
@@ -224,7 +222,12 @@ with tab_run:
         st.session_state.pipeline_result = None
         st.session_state.pipeline_error = None
 
+        log_queue = queue.Queue()
         result_queue = queue.Queue()
+
+        def update_log(source_id: str, stage: str):
+            msg = f"[{datetime.now().strftime('%H:%M:%S')}] {source_id} → {stage}"
+            log_queue.put(msg)
 
         def run_in_thread():
             try:
@@ -243,20 +246,28 @@ with tab_run:
         thread = threading.Thread(target=run_in_thread, daemon=True)
         thread.start()
 
-        # Poll until done, refreshing log every 2s
+        # Poll until done, draining the log queue every 2s
         progress_bar = st.progress(0, text="Starting pipeline...")
         log_box = st.empty()
         total_items = max_reviews + max_emails
+        logs = []
 
         while thread.is_alive():
             time.sleep(2)
-            done = len([m for m in st.session_state.log_messages if "Done" in m or "Error" in m])
+            while not log_queue.empty():
+                logs.append(log_queue.get_nowait())
+            done = len([m for m in logs if "Done" in m or "Error" in m])
             pct = min(int(done / max(total_items, 1) * 100), 99)
             progress_bar.progress(pct, text=f"Processing... {done}/{total_items} items done")
-            log_box.code("\n".join(st.session_state.log_messages[-15:]))
+            log_box.code("\n".join(logs[-15:]))
+
+        # Drain any remaining log messages
+        while not log_queue.empty():
+            logs.append(log_queue.get_nowait())
+        st.session_state.log_messages = logs
 
         progress_bar.progress(100, text="Done!")
-        log_box.code("\n".join(st.session_state.log_messages[-15:]))
+        log_box.code("\n".join(logs[-15:]))
 
         kind, payload = result_queue.get()
         st.session_state.processing = False
