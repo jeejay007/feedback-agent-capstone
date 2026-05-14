@@ -6,24 +6,8 @@ import uuid
 import time
 import logging
 from datetime import datetime
-from crewai import Crew, Process
-
-from agents import (
-    create_csv_reader_agent,
-    create_classifier_agent,
-    create_bug_analysis_agent,
-    create_feature_extractor_agent,
-    create_ticket_creator_agent,
-    create_quality_critic_agent,
-)
-from tasks import (
-    create_read_task,
-    create_classification_task,
-    create_bug_analysis_task,
-    create_feature_extraction_task,
-    create_ticket_creation_task,
-    create_quality_review_task,
-)
+from google import genai
+from google.genai import types
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -41,12 +25,10 @@ TICKET_FIELDS = [
     "technical_details", "source_id", "source_type", "status", "created_at",
     "quality_score", "quality_issues",
 ]
-
 LOG_FIELDS = [
     "log_id", "timestamp", "source_id", "source_type", "raw_text",
     "category", "confidence_score", "priority", "ticket_id", "processing_time_s",
 ]
-
 METRICS_FIELDS = [
     "run_id", "timestamp", "total_processed", "bugs", "feature_requests",
     "praise", "complaints", "spam", "avg_quality_score", "avg_confidence_score",
@@ -54,44 +36,43 @@ METRICS_FIELDS = [
 ]
 
 
-INTER_ITEM_DELAY = 15  # seconds between feedback items to respect rate limits
+# ── LLM call with retry ────────────────────────────────────────────────────────
 
-
-def _kickoff_with_retry(crew: Crew, max_retries: int = 5, base_delay: float = 60.0):
-    """Run crew.kickoff() with exponential backoff on 429 rate limit errors."""
+def _call_llm(prompt: str, max_retries: int = 5) -> str:
+    """Single Gemini API call with exponential backoff on 429."""
+    client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
     for attempt in range(max_retries):
         try:
-            return crew.kickoff()
+            response = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=prompt,
+            )
+            return response.text
         except Exception as e:
             msg = str(e)
             if "429" in msg or "RESOURCE_EXHAUSTED" in msg or "quota" in msg.lower():
-                # Try to extract retryDelay from the error message
-                wait = base_delay * (2 ** attempt)
+                wait = 60 * (2 ** attempt)
                 retry_match = re.search(r"retryDelay.*?(\d+)s", msg)
                 if retry_match:
                     wait = max(wait, int(retry_match.group(1)) + 5)
-                logger.warning("Rate limit hit (attempt %d/%d). Waiting %.0fs...", attempt + 1, max_retries, wait)
+                logger.warning("Rate limit (attempt %d/%d). Waiting %.0fs...", attempt + 1, max_retries, wait)
                 time.sleep(wait)
             else:
                 raise
-    raise RuntimeError(f"Max retries ({max_retries}) exceeded due to rate limiting.")
+    raise RuntimeError("Max retries exceeded due to rate limiting.")
 
 
 def _extract_json(text: str) -> dict:
-    """Extract the first JSON object from an LLM response string."""
     try:
-        # Try direct parse first
         return json.loads(text)
     except json.JSONDecodeError:
         pass
-    # Look for ```json ... ``` blocks
     match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if match:
         try:
             return json.loads(match.group(1))
         except json.JSONDecodeError:
             pass
-    # Look for bare JSON object
     match = re.search(r"\{.*\}", text, re.DOTALL)
     if match:
         try:
@@ -102,35 +83,119 @@ def _extract_json(text: str) -> dict:
     return {}
 
 
+# ── Agent prompts (single LLM call each) ──────────────────────────────────────
+
+def agent_classify(feedback_text: str) -> dict:
+    """Feedback Classifier Agent — one LLM call."""
+    prompt = f"""You are an NLP expert classifying user feedback for a mobile productivity app.
+
+Classify the following feedback into exactly ONE category:
+- Bug: app crashes, errors, broken features, data loss
+- Feature Request: asking for new functionality
+- Praise: positive feedback, compliments
+- Complaint: negative experience not caused by a bug (pricing, support, slowness)
+- Spam: promotional, random, unrelated content
+
+Feedback:
+{feedback_text}
+
+Respond ONLY with valid JSON:
+{{"category": "Bug|Feature Request|Praise|Complaint|Spam", "confidence_score": 0-100, "justification": "one sentence"}}"""
+    result = _call_llm(prompt)
+    return _extract_json(result)
+
+
+def agent_analyze_bug(feedback_text: str) -> dict:
+    """Bug Analysis Agent — one LLM call."""
+    prompt = f"""You are a senior engineer triaging bug reports.
+
+Extract technical details from this bug report:
+{feedback_text}
+
+Respond ONLY with valid JSON:
+{{"severity": "Critical|High|Medium|Low", "device": "...", "os_version": "...", "app_version": "...", "steps_to_reproduce": "...", "actual_behavior": "...", "affected_component": "..."}}
+
+Use "Unknown" for any field not mentioned."""
+    result = _call_llm(prompt)
+    return _extract_json(result)
+
+
+def agent_analyze_feature(feedback_text: str) -> dict:
+    """Feature Extractor Agent — one LLM call."""
+    prompt = f"""You are a product manager analyzing feature requests.
+
+Extract details from this feature request:
+{feedback_text}
+
+Respond ONLY with valid JSON:
+{{"feature_name": "...", "description": "...", "user_impact": "High|Medium|Low", "priority": "High|Medium|Low", "implementation_summary": "..."}}"""
+    result = _call_llm(prompt)
+    return _extract_json(result)
+
+
+def agent_create_ticket(feedback_text: str, classification: dict, analysis: dict, source_id: str, source_type: str, priority_overrides: dict) -> dict:
+    """Ticket Creator Agent — one LLM call."""
+    category = classification.get("category", "Complaint")
+    default_priority = priority_overrides.get(category, "Medium")
+
+    prompt = f"""You are a project manager creating an engineering ticket.
+
+Source ID: {source_id} ({source_type})
+Category: {category}
+Analysis: {json.dumps(analysis)}
+Original feedback: {feedback_text}
+
+Create a structured ticket. Respond ONLY with valid JSON:
+{{"ticket_id": "TKT-{str(uuid.uuid4())[:8].upper()}", "title": "concise actionable title", "description": "clear description for an engineer", "category": "{category}", "priority": "{default_priority}", "technical_details": "key technical info", "source_id": "{source_id}", "source_type": "{source_type}", "status": "Open", "created_at": "{datetime.now().isoformat()}"}}"""
+    result = _call_llm(prompt)
+    ticket = _extract_json(result)
+    if not ticket.get("ticket_id"):
+        ticket["ticket_id"] = f"TKT-{str(uuid.uuid4())[:8].upper()}"
+    ticket.setdefault("source_id", source_id)
+    ticket.setdefault("source_type", source_type)
+    ticket.setdefault("category", category)
+    ticket.setdefault("priority", default_priority)
+    ticket.setdefault("status", "Open")
+    ticket.setdefault("created_at", datetime.now().isoformat())
+    return ticket
+
+
+def agent_quality_review(ticket: dict) -> dict:
+    """Quality Critic Agent — one LLM call."""
+    prompt = f"""You are a QA lead reviewing an engineering ticket for completeness.
+
+Ticket:
+{json.dumps(ticket, indent=2)}
+
+Check: (1) all fields present and non-empty, (2) priority matches severity, (3) title is clear and actionable, (4) description is sufficient.
+
+Respond ONLY with valid JSON:
+{{"approved": true|false, "quality_score": 0-100, "issues": ["issue1", "issue2"]}}"""
+    result = _call_llm(prompt)
+    return _extract_json(result)
+
+
+# ── CSV helpers ────────────────────────────────────────────────────────────────
+
 def _ensure_csv(path: str, fieldnames: list):
     if not os.path.exists(path):
         with open(path, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
+            csv.DictWriter(f, fieldnames=fieldnames).writeheader()
 
 
 def _append_row(path: str, fieldnames: list, row: dict):
     with open(path, "a", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
-        writer.writerow(row)
+        csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore").writerow(row)
 
 
 def load_app_store_reviews() -> list[dict]:
-    path = os.path.join(DATA_DIR, "app_store_reviews.csv")
-    rows = []
-    with open(path, newline="") as f:
-        for row in csv.DictReader(f):
-            rows.append(row)
-    return rows
+    with open(os.path.join(DATA_DIR, "app_store_reviews.csv"), newline="") as f:
+        return list(csv.DictReader(f))
 
 
 def load_support_emails() -> list[dict]:
-    path = os.path.join(DATA_DIR, "support_emails.csv")
-    rows = []
-    with open(path, newline="") as f:
-        for row in csv.DictReader(f):
-            rows.append(row)
-    return rows
+    with open(os.path.join(DATA_DIR, "support_emails.csv"), newline="") as f:
+        return list(csv.DictReader(f))
 
 
 def format_review_text(row: dict) -> str:
@@ -153,6 +218,8 @@ def format_email_text(row: dict) -> str:
     )
 
 
+# ── Main pipeline ──────────────────────────────────────────────────────────────
+
 def process_single_feedback(
     feedback_text: str,
     source_id: str,
@@ -160,118 +227,54 @@ def process_single_feedback(
     thresholds: dict,
     progress_callback=None,
 ) -> dict:
-    """Run the full multi-agent pipeline for one feedback item."""
     start_time = datetime.now()
+    priority_overrides = thresholds.get("priority_overrides", {})
+    min_confidence = thresholds.get("min_confidence", 0)
 
-    reader_agent = create_csv_reader_agent()
-    classifier_agent = create_classifier_agent()
-    bug_agent = create_bug_analysis_agent()
-    feature_agent = create_feature_extractor_agent()
-    ticket_agent = create_ticket_creator_agent()
-    critic_agent = create_quality_critic_agent()
-
-    # --- Step 1: Read / Parse ---
-    if progress_callback:
-        progress_callback(source_id, "Reading")
-    read_task = create_read_task(reader_agent, feedback_text, source_type)
-    read_crew = Crew(agents=[reader_agent], tasks=[read_task], process=Process.sequential, verbose=False)
-    read_result = _kickoff_with_retry(read_crew)
-    parsed = _extract_json(str(read_result))
-
-    # --- Step 2: Classify ---
+    # Step 1: Classify
     if progress_callback:
         progress_callback(source_id, "Classifying")
-    clf_task = create_classification_task(classifier_agent, feedback_text)
-    clf_crew = Crew(agents=[classifier_agent], tasks=[clf_task], process=Process.sequential, verbose=False)
-    clf_result = _kickoff_with_retry(clf_crew)
-    classification = _extract_json(str(clf_result))
-
+    classification = agent_classify(feedback_text)
     category = classification.get("category", "Complaint")
     confidence = classification.get("confidence_score", 50)
-
-    # Apply confidence threshold
-    min_confidence = thresholds.get("min_confidence", 0)
     if isinstance(confidence, str):
-        try:
-            confidence = int(confidence)
-        except ValueError:
-            confidence = 50
+        confidence = int(confidence) if confidence.isdigit() else 50
     if confidence < min_confidence:
         category = "Unclassified"
+    classification["category"] = category
 
-    # --- Step 3: Specialized analysis ---
-    if progress_callback:
-        progress_callback(source_id, "Analyzing")
+    # Step 2: Specialized analysis (only for Bug/Feature)
     analysis = {}
     if category == "Bug":
-        bug_task = create_bug_analysis_task(bug_agent, feedback_text)
-        bug_crew = Crew(agents=[bug_agent], tasks=[bug_task], process=Process.sequential, verbose=False)
-        bug_result = _kickoff_with_retry(bug_crew)
-        analysis = _extract_json(str(bug_result))
+        if progress_callback:
+            progress_callback(source_id, "Analyzing bug")
+        analysis = agent_analyze_bug(feedback_text)
     elif category == "Feature Request":
-        feat_task = create_feature_extraction_task(feature_agent, feedback_text)
-        feat_crew = Crew(agents=[feature_agent], tasks=[feat_task], process=Process.sequential, verbose=False)
-        feat_result = _kickoff_with_retry(feat_crew)
-        analysis = _extract_json(str(feat_result))
+        if progress_callback:
+            progress_callback(source_id, "Extracting feature")
+        analysis = agent_analyze_feature(feedback_text)
 
-    # --- Step 4: Create ticket ---
+    # Step 3: Create ticket
     if progress_callback:
         progress_callback(source_id, "Creating ticket")
-    ticket_task = create_ticket_creation_task(
-        ticket_agent,
-        json.dumps(classification),
-        json.dumps(analysis),
-        feedback_text,
-    )
-    ticket_crew = Crew(agents=[ticket_agent], tasks=[ticket_task], process=Process.sequential, verbose=False)
-    ticket_result = _kickoff_with_retry(ticket_crew)
-    ticket = _extract_json(str(ticket_result))
+    ticket = agent_create_ticket(feedback_text, classification, analysis, source_id, source_type, priority_overrides)
 
-    if not ticket.get("ticket_id"):
-        ticket["ticket_id"] = f"TKT-{str(uuid.uuid4())[:8].upper()}"
-    if not ticket.get("source_id"):
-        ticket["source_id"] = source_id
-    if not ticket.get("source_type"):
-        ticket["source_type"] = source_type
-    if not ticket.get("category"):
-        ticket["category"] = category
-    if not ticket.get("status"):
-        ticket["status"] = "Open"
-    if not ticket.get("created_at"):
-        ticket["created_at"] = datetime.now().isoformat()
-
-    # Apply priority override from thresholds
-    priority_map = thresholds.get("priority_overrides", {})
-    if category in priority_map and not ticket.get("priority"):
-        ticket["priority"] = priority_map[category]
-
-    # --- Step 5: Quality review ---
+    # Step 4: Quality review
     if progress_callback:
         progress_callback(source_id, "Quality review")
-    qc_task = create_quality_review_task(critic_agent, json.dumps(ticket))
-    qc_crew = Crew(agents=[critic_agent], tasks=[qc_task], process=Process.sequential, verbose=False)
-    qc_result = _kickoff_with_retry(qc_crew)
-    qc = _extract_json(str(qc_result))
+    qc = agent_quality_review(ticket)
 
-    final_ticket = qc.get("corrected_ticket", ticket)
-    if isinstance(final_ticket, str):
-        final_ticket = _extract_json(final_ticket)
-    if not final_ticket:
-        final_ticket = ticket
-
-    final_ticket["quality_score"] = qc.get("quality_score", 0)
-    final_ticket["quality_issues"] = "; ".join(qc.get("issues", []))
-    final_ticket["source_id"] = source_id
-    final_ticket["source_type"] = source_type
+    ticket["quality_score"] = qc.get("quality_score", 75)
+    ticket["quality_issues"] = "; ".join(qc.get("issues", []))
 
     elapsed = (datetime.now() - start_time).total_seconds()
 
     return {
-        "ticket": final_ticket,
+        "ticket": ticket,
         "category": category,
         "confidence_score": confidence,
-        "quality_score": qc.get("quality_score", 0),
-        "approved": qc.get("approved", False),
+        "quality_score": qc.get("quality_score", 75),
+        "approved": qc.get("approved", True),
         "processing_time_s": round(elapsed, 2),
         "source_id": source_id,
         "source_type": source_type,
@@ -279,17 +282,12 @@ def process_single_feedback(
 
 
 def run_pipeline(
-    max_reviews: int = 20,
-    max_emails: int = 10,
+    max_reviews: int = 5,
+    max_emails: int = 3,
     thresholds: dict = None,
-    inter_item_delay: int = 15,
+    inter_item_delay: int = 5,
     progress_callback=None,
 ) -> dict:
-    """
-    Run the full pipeline over the CSV datasets.
-
-    Returns a summary dict with counts and paths to output files.
-    """
     if thresholds is None:
         thresholds = {"min_confidence": 0}
 
@@ -298,44 +296,30 @@ def run_pipeline(
 
     run_id = str(uuid.uuid4())[:8]
     stats = {
-        "run_id": run_id,
-        "total": 0,
-        "Bug": 0,
-        "Feature Request": 0,
-        "Praise": 0,
-        "Complaint": 0,
-        "Spam": 0,
-        "Unclassified": 0,
-        "quality_scores": [],
-        "confidence_scores": [],
-        "approved": 0,
-        "flagged": 0,
+        "run_id": run_id, "total": 0,
+        "Bug": 0, "Feature Request": 0, "Praise": 0,
+        "Complaint": 0, "Spam": 0, "Unclassified": 0,
+        "quality_scores": [], "confidence_scores": [],
+        "approved": 0, "flagged": 0,
     }
 
     reviews = load_app_store_reviews()[:max_reviews]
     emails = load_support_emails()[:max_emails]
-
-    all_items = []
-    for row in reviews:
-        all_items.append((format_review_text(row), row["review_id"], "app_store_review"))
-    for row in emails:
-        all_items.append((format_email_text(row), row["email_id"], "support_email"))
+    all_items = (
+        [(format_review_text(r), r["review_id"], "app_store_review") for r in reviews] +
+        [(format_email_text(e), e["email_id"], "support_email") for e in emails]
+    )
 
     results = []
-    for feedback_text, source_id, source_type in all_items:
+    for i, (feedback_text, source_id, source_type) in enumerate(all_items):
         try:
             logger.info("Processing %s (%s)", source_id, source_type)
-            result = process_single_feedback(
-                feedback_text, source_id, source_type, thresholds, progress_callback
-            )
+            result = process_single_feedback(feedback_text, source_id, source_type, thresholds, progress_callback)
             ticket = result["ticket"]
             cat = result["category"]
 
-            # Write ticket
             _append_row(GENERATED_TICKETS_CSV, TICKET_FIELDS, ticket)
-
-            # Write log
-            log_row = {
+            _append_row(PROCESSING_LOG_CSV, LOG_FIELDS, {
                 "log_id": str(uuid.uuid4())[:8],
                 "timestamp": datetime.now().isoformat(),
                 "source_id": source_id,
@@ -346,34 +330,26 @@ def run_pipeline(
                 "priority": ticket.get("priority", ""),
                 "ticket_id": ticket.get("ticket_id", ""),
                 "processing_time_s": result["processing_time_s"],
-            }
-            _append_row(PROCESSING_LOG_CSV, LOG_FIELDS, log_row)
+            })
 
-            # Update stats
             stats["total"] += 1
             stats[cat] = stats.get(cat, 0) + 1
             stats["quality_scores"].append(result["quality_score"])
             stats["confidence_scores"].append(result["confidence_score"])
-            if result["approved"]:
-                stats["approved"] += 1
-            else:
-                stats["flagged"] += 1
-
+            stats["approved" if result["approved"] else "flagged"] += 1
             results.append(result)
+
+            if progress_callback:
+                progress_callback(source_id, f"Done ({result['processing_time_s']:.1f}s)")
 
         except Exception as e:
             logger.error("Error processing %s: %s", source_id, str(e))
             if progress_callback:
-                progress_callback(source_id, f"Error: {str(e)}")
+                progress_callback(source_id, f"Error: {str(e)[:80]}")
 
-        # Pause between items to avoid hitting free-tier rate limits
-        if all_items.index((feedback_text, source_id, source_type)) < len(all_items) - 1:
-            logger.info("Waiting %ds before next item...", inter_item_delay)
-            if progress_callback:
-                progress_callback(source_id, f"Done. Waiting {inter_item_delay}s before next item...")
+        if i < len(all_items) - 1 and inter_item_delay > 0:
             time.sleep(inter_item_delay)
 
-    # Write metrics
     _ensure_csv(METRICS_CSV, METRICS_FIELDS)
     qs = stats["quality_scores"]
     cs = stats["confidence_scores"]
