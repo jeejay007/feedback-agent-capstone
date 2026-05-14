@@ -178,7 +178,7 @@ with tab_dashboard:
 
         st.subheader("Recent Tickets")
         display_cols = [c for c in ["ticket_id", "title", "category", "priority", "status", "created_at"] if c in tickets_df.columns]
-        st.dataframe(tickets_df[display_cols].tail(10), use_container_width=True)
+        st.dataframe(tickets_df[display_cols].tail(10), width="stretch")
     else:
         st.info("No tickets yet. Run the pipeline from the **Run Pipeline** tab.")
 
@@ -196,10 +196,10 @@ with tab_run:
         c1, c2 = st.columns(2)
         with c1:
             st.subheader(f"App Store Reviews ({len(rev_df)} rows)")
-            st.dataframe(rev_df.head(5), use_container_width=True)
+            st.dataframe(rev_df.head(5), width="stretch")
         with c2:
             st.subheader(f"Support Emails ({len(email_df)} rows)")
-            st.dataframe(email_df.head(5), use_container_width=True)
+            st.dataframe(email_df.head(5), width="stretch")
 
     if not validate_api_key():
         st.warning("Please enter your Google API Key in the sidebar before running.")
@@ -288,7 +288,7 @@ with tab_tickets:
             filtered = filtered[filtered["status"] == sel_stat]
 
         st.caption(f"Showing {len(filtered)} of {len(tickets_df)} tickets")
-        st.dataframe(filtered, use_container_width=True)
+        st.dataframe(filtered, width="stretch")
 
         # Download
         st.download_button(
@@ -387,7 +387,7 @@ with tab_analytics:
                 ]
                 if c in metrics_df.columns
             ]
-            st.dataframe(metrics_df[display_metrics], use_container_width=True)
+            st.dataframe(metrics_df[display_metrics], width="stretch")
 
         if not tickets_df.empty:
             col1, col2 = st.columns(2)
@@ -415,7 +415,7 @@ with tab_analytics:
 
         if not logs_df.empty:
             st.subheader("Processing Log")
-            st.dataframe(logs_df.tail(20), use_container_width=True)
+            st.dataframe(logs_df.tail(20), width="stretch")
             st.download_button(
                 "📥 Download Processing Log",
                 logs_df.to_csv(index=False),
@@ -439,5 +439,5 @@ with tab_analytics:
                 st.metric("Classification Accuracy", f"{accuracy:.1f}%")
                 st.dataframe(
                     merged[["source_id", "category", "predicted_category", "correct"]],
-                    use_container_width=True,
+                    width="stretch",
                 )
