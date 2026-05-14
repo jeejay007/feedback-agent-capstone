@@ -44,7 +44,7 @@ def _call_llm(prompt: str, max_retries: int = 3) -> str:
     for attempt in range(max_retries):
         try:
             response = client.models.generate_content(
-                model=os.getenv("GEMINI_MODEL", "gemini-1.5-flash"),
+                model=os.getenv("GEMINI_MODEL", "gemini-2.0-flash-lite"),
                 contents=prompt,
             )
             return response.text

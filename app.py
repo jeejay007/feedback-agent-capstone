@@ -99,9 +99,9 @@ with st.sidebar:
     st.subheader("Model")
     model_name = st.selectbox(
         "Gemini Model",
-        ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"],
+        ["gemini-2.0-flash-lite", "gemini-2.0-flash", "gemini-1.5-flash-latest"],
         index=0,
-        help="Switch model if you hit quota limits on one.",
+        help="gemini-2.0-flash-lite has the most generous free quota.",
     )
     os.environ["GEMINI_MODEL"] = model_name
 
