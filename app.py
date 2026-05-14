@@ -96,11 +96,22 @@ with st.sidebar:
 
     st.divider()
 
+    st.subheader("Model")
+    model_name = st.selectbox(
+        "Gemini Model",
+        ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"],
+        index=0,
+        help="Switch model if you hit quota limits on one.",
+    )
+    os.environ["GEMINI_MODEL"] = model_name
+
+    st.divider()
+
     st.subheader("Rate Limit Settings")
     inter_item_delay = st.slider(
         "Delay between items (seconds)",
-        min_value=5, max_value=120, value=15,
-        help="Increase if you hit 429 quota errors. Free tier needs ~15-60s between items.",
+        min_value=2, max_value=60, value=3,
+        help="Small delay between items. Retries handle actual rate limits automatically.",
     )
 
     st.subheader("Processing Settings")
