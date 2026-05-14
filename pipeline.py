@@ -38,7 +38,7 @@ METRICS_FIELDS = [
 
 # ── LLM call with retry ────────────────────────────────────────────────────────
 
-def _call_llm(prompt: str, max_retries: int = 5) -> str:
+def _call_llm(prompt: str, max_retries: int = 3) -> str:
     """Single Gemini API call with exponential backoff on 429."""
     client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
     for attempt in range(max_retries):
@@ -51,15 +51,16 @@ def _call_llm(prompt: str, max_retries: int = 5) -> str:
         except Exception as e:
             msg = str(e)
             if "429" in msg or "RESOURCE_EXHAUSTED" in msg or "quota" in msg.lower():
-                wait = 60 * (2 ** attempt)
+                # Extract suggested retry delay from error, cap at 90s
+                wait = 30 * (attempt + 1)
                 retry_match = re.search(r"retryDelay.*?(\d+)s", msg)
                 if retry_match:
-                    wait = max(wait, int(retry_match.group(1)) + 5)
-                logger.warning("Rate limit (attempt %d/%d). Waiting %.0fs...", attempt + 1, max_retries, wait)
+                    wait = min(int(retry_match.group(1)) + 2, 90)
+                logger.warning("Rate limit (attempt %d/%d). Waiting %ds...", attempt + 1, max_retries, wait)
                 time.sleep(wait)
             else:
                 raise
-    raise RuntimeError("Max retries exceeded due to rate limiting.")
+    raise RuntimeError("Rate limit: max retries exceeded. Try again in a minute.")
 
 
 def _extract_json(text: str) -> dict:

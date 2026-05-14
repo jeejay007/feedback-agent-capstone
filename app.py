@@ -2,6 +2,7 @@ import os
 import csv
 import json
 import threading
+import queue
 import time
 from datetime import datetime
 
@@ -207,7 +208,6 @@ with tab_run:
         st.success("Google API Key detected.")
 
     log_placeholder = st.empty()
-    progress_placeholder = st.empty()
     status_placeholder = st.empty()
 
     def update_log(source_id: str, stage: str):
@@ -221,11 +221,14 @@ with tab_run:
     ):
         st.session_state.processing = True
         st.session_state.log_messages = []
+        st.session_state.pipeline_result = None
+        st.session_state.pipeline_error = None
 
-        with st.spinner("Running multi-agent pipeline..."):
+        result_queue = queue.Queue()
+
+        def run_in_thread():
             try:
                 from pipeline import run_pipeline
-
                 result = run_pipeline(
                     max_reviews=max_reviews,
                     max_emails=max_emails,
@@ -233,23 +236,47 @@ with tab_run:
                     inter_item_delay=inter_item_delay,
                     progress_callback=update_log,
                 )
-                st.session_state.last_run_stats = result
-                st.success(
-                    f"Pipeline complete! Processed {result['stats']['total']} items. "
-                    f"Run ID: {result['run_id']}"
-                )
-                # Show summary
-                m = result["metrics_row"]
-                c1, c2, c3, c4, c5 = st.columns(5)
-                c1.metric("Bugs", m["bugs"])
-                c2.metric("Features", m["feature_requests"])
-                c3.metric("Praise", m["praise"])
-                c4.metric("Complaints", m["complaints"])
-                c5.metric("Spam", m["spam"])
+                result_queue.put(("ok", result))
             except Exception as e:
-                st.error(f"Pipeline error: {str(e)}")
-            finally:
-                st.session_state.processing = False
+                result_queue.put(("error", str(e)))
+
+        thread = threading.Thread(target=run_in_thread, daemon=True)
+        thread.start()
+
+        # Poll until done, refreshing log every 2s
+        progress_bar = st.progress(0, text="Starting pipeline...")
+        log_box = st.empty()
+        total_items = max_reviews + max_emails
+
+        while thread.is_alive():
+            time.sleep(2)
+            done = len([m for m in st.session_state.log_messages if "Done" in m or "Error" in m])
+            pct = min(int(done / max(total_items, 1) * 100), 99)
+            progress_bar.progress(pct, text=f"Processing... {done}/{total_items} items done")
+            log_box.code("\n".join(st.session_state.log_messages[-15:]))
+
+        progress_bar.progress(100, text="Done!")
+        log_box.code("\n".join(st.session_state.log_messages[-15:]))
+
+        kind, payload = result_queue.get()
+        st.session_state.processing = False
+
+        if kind == "ok":
+            result = payload
+            st.session_state.last_run_stats = result
+            st.success(
+                f"✅ Pipeline complete! Processed {result['stats']['total']} items. "
+                f"Run ID: {result['run_id']}"
+            )
+            m = result["metrics_row"]
+            c1, c2, c3, c4, c5 = st.columns(5)
+            c1.metric("Bugs", m["bugs"])
+            c2.metric("Features", m["feature_requests"])
+            c3.metric("Praise", m["praise"])
+            c4.metric("Complaints", m["complaints"])
+            c5.metric("Spam", m["spam"])
+        else:
+            st.error(f"Pipeline error: {payload}")
 
     # Show log
     if st.session_state.log_messages:
