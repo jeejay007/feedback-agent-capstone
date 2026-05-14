@@ -1,0 +1,21 @@
+review_id,platform,rating,review_text,user_name,date,app_version
+R001,Google Play,1,App crashes every time I try to open the task list. Happened after the 3.0.1 update. Samsung Galaxy S21 Android 13. Completely unusable now.,priya_sharma,2024-05-01,3.0.1
+R002,App Store,2,Can't login since the latest update. I enter my password correctly but get a 'Session Expired' error immediately. iPhone 14 iOS 17.2.,john_doe,2024-05-02,3.0.1
+R003,Google Play,5,Amazing app! The new calendar sync feature works perfectly. Productivity has gone through the roof. Love the clean UI.,happy_user99,2024-05-02,3.0.0
+R004,App Store,3,Please add a dark mode option. Using the app at night is very uncomfortable. Would really improve the experience.,nightowl_dev,2024-05-03,2.9.5
+R005,Google Play,1,Data sync is completely broken. I lost 2 weeks of notes after syncing across devices. Pixel 7 Android 14. This is a serious data loss issue.,alex_nk,2024-05-03,3.0.1
+R006,App Store,4,Would love to see a widget for the home screen to quickly add tasks without opening the full app. Great app overall!,swift_coder,2024-05-04,3.0.0
+R007,Google Play,2,The notification reminders stopped working after update 3.0.1. I'm missing deadlines because of this. OnePlus 11 Android 13.,ravi_k,2024-05-04,3.0.1
+R008,App Store,5,Works perfectly! Best productivity app I've used in years. The collaboration features are top notch.,melissa_t,2024-05-05,3.0.0
+R009,Google Play,1,BUY CHEAP FOLLOWERS!! CLICK HERE >>> spam-link.biz GET 1000 FOLLOWERS FOR FREE!!!,spam_bot_42,2024-05-05,1.0.0
+R010,App Store,3,Missing functionality for recurring tasks. I have to manually recreate weekly tasks every single week. Please add recurrence options.,productivity_pro,2024-05-06,2.9.5
+R011,Google Play,2,Too expensive for what it offers. The premium plan is $15/month which is way more than competitors. Will cancel soon.,budget_user,2024-05-06,3.0.0
+R012,App Store,1,The app freezes on the dashboard screen for about 30 seconds every time I open it. iPhone 13 Pro iOS 17.1. Only started after 3.0.1 update.,freeze_report,2024-05-07,3.0.1
+R013,Google Play,5,Love the new feature that allows sharing task lists with teammates. Our whole team uses it now. Excellent execution!,team_lead_5,2024-05-07,3.0.0
+R014,App Store,4,Please add integration with Google Calendar. Having to switch between apps to manage my schedule is painful.,calendar_fan,2024-05-08,3.0.0
+R015,Google Play,1,App keeps logging me out randomly. I lose unsaved work every time. Very frustrating. Pixel 6 Android 13.,logout_bug,2024-05-08,3.0.1
+R016,App Store,2,Poor customer service. Raised a ticket 2 weeks ago and still no response. The in-app support is completely unresponsive.,frustrated_user,2024-05-09,3.0.0
+R017,Google Play,4,Would love an offline mode so I can access my tasks without internet. Great app but this is a critical missing feature.,offline_needed,2024-05-09,3.0.0
+R018,App Store,5,Absolutely love this app. The UI is beautiful and intuitive. Best $5 I've spent this year.,ux_fan,2024-05-10,3.0.0
+R019,Google Play,1,Crash on startup after update. Uninstalled and reinstalled twice. Still crashes. Samsung Galaxy A52 Android 12. Please fix ASAP.,crash_galaxy,2024-05-10,3.0.1
+R020,App Store,3,The search functionality is very slow. Takes 10+ seconds to search through my task list. Please optimize it.,slow_search,2024-05-11,3.0.0
