@@ -3,6 +3,7 @@ import csv
 import json
 import re
 import uuid
+import time
 import logging
 from datetime import datetime
 from crewai import Crew, Process
@@ -51,6 +52,29 @@ METRICS_FIELDS = [
     "praise", "complaints", "spam", "avg_quality_score", "avg_confidence_score",
     "tickets_approved", "tickets_flagged",
 ]
+
+
+INTER_ITEM_DELAY = 15  # seconds between feedback items to respect rate limits
+
+
+def _kickoff_with_retry(crew: Crew, max_retries: int = 5, base_delay: float = 60.0):
+    """Run crew.kickoff() with exponential backoff on 429 rate limit errors."""
+    for attempt in range(max_retries):
+        try:
+            return crew.kickoff()
+        except Exception as e:
+            msg = str(e)
+            if "429" in msg or "RESOURCE_EXHAUSTED" in msg or "quota" in msg.lower():
+                # Try to extract retryDelay from the error message
+                wait = base_delay * (2 ** attempt)
+                retry_match = re.search(r"retryDelay.*?(\d+)s", msg)
+                if retry_match:
+                    wait = max(wait, int(retry_match.group(1)) + 5)
+                logger.warning("Rate limit hit (attempt %d/%d). Waiting %.0fs...", attempt + 1, max_retries, wait)
+                time.sleep(wait)
+            else:
+                raise
+    raise RuntimeError(f"Max retries ({max_retries}) exceeded due to rate limiting.")
 
 
 def _extract_json(text: str) -> dict:
@@ -151,7 +175,7 @@ def process_single_feedback(
         progress_callback(source_id, "Reading")
     read_task = create_read_task(reader_agent, feedback_text, source_type)
     read_crew = Crew(agents=[reader_agent], tasks=[read_task], process=Process.sequential, verbose=False)
-    read_result = read_crew.kickoff()
+    read_result = _kickoff_with_retry(read_crew)
     parsed = _extract_json(str(read_result))
 
     # --- Step 2: Classify ---
@@ -159,7 +183,7 @@ def process_single_feedback(
         progress_callback(source_id, "Classifying")
     clf_task = create_classification_task(classifier_agent, feedback_text)
     clf_crew = Crew(agents=[classifier_agent], tasks=[clf_task], process=Process.sequential, verbose=False)
-    clf_result = clf_crew.kickoff()
+    clf_result = _kickoff_with_retry(clf_crew)
     classification = _extract_json(str(clf_result))
 
     category = classification.get("category", "Complaint")
@@ -182,12 +206,12 @@ def process_single_feedback(
     if category == "Bug":
         bug_task = create_bug_analysis_task(bug_agent, feedback_text)
         bug_crew = Crew(agents=[bug_agent], tasks=[bug_task], process=Process.sequential, verbose=False)
-        bug_result = bug_crew.kickoff()
+        bug_result = _kickoff_with_retry(bug_crew)
         analysis = _extract_json(str(bug_result))
     elif category == "Feature Request":
         feat_task = create_feature_extraction_task(feature_agent, feedback_text)
         feat_crew = Crew(agents=[feature_agent], tasks=[feat_task], process=Process.sequential, verbose=False)
-        feat_result = feat_crew.kickoff()
+        feat_result = _kickoff_with_retry(feat_crew)
         analysis = _extract_json(str(feat_result))
 
     # --- Step 4: Create ticket ---
@@ -200,7 +224,7 @@ def process_single_feedback(
         feedback_text,
     )
     ticket_crew = Crew(agents=[ticket_agent], tasks=[ticket_task], process=Process.sequential, verbose=False)
-    ticket_result = ticket_crew.kickoff()
+    ticket_result = _kickoff_with_retry(ticket_crew)
     ticket = _extract_json(str(ticket_result))
 
     if not ticket.get("ticket_id"):
@@ -226,7 +250,7 @@ def process_single_feedback(
         progress_callback(source_id, "Quality review")
     qc_task = create_quality_review_task(critic_agent, json.dumps(ticket))
     qc_crew = Crew(agents=[critic_agent], tasks=[qc_task], process=Process.sequential, verbose=False)
-    qc_result = qc_crew.kickoff()
+    qc_result = _kickoff_with_retry(qc_crew)
     qc = _extract_json(str(qc_result))
 
     final_ticket = qc.get("corrected_ticket", ticket)
@@ -258,6 +282,7 @@ def run_pipeline(
     max_reviews: int = 20,
     max_emails: int = 10,
     thresholds: dict = None,
+    inter_item_delay: int = 15,
     progress_callback=None,
 ) -> dict:
     """
@@ -340,6 +365,13 @@ def run_pipeline(
             logger.error("Error processing %s: %s", source_id, str(e))
             if progress_callback:
                 progress_callback(source_id, f"Error: {str(e)}")
+
+        # Pause between items to avoid hitting free-tier rate limits
+        if all_items.index((feedback_text, source_id, source_type)) < len(all_items) - 1:
+            logger.info("Waiting %ds before next item...", inter_item_delay)
+            if progress_callback:
+                progress_callback(source_id, f"Done. Waiting {inter_item_delay}s before next item...")
+            time.sleep(inter_item_delay)
 
     # Write metrics
     _ensure_csv(METRICS_CSV, METRICS_FIELDS)

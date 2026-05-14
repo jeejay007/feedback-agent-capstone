@@ -93,6 +93,13 @@ with st.sidebar:
 
     st.divider()
 
+    st.subheader("Rate Limit Settings")
+    inter_item_delay = st.slider(
+        "Delay between items (seconds)",
+        min_value=5, max_value=120, value=15,
+        help="Increase if you hit 429 quota errors. Free tier needs ~15-60s between items.",
+    )
+
     st.subheader("Processing Settings")
     max_reviews = st.slider("Max App Store Reviews", 1, 20, 5)
     max_emails = st.slider("Max Support Emails", 1, 10, 3)
@@ -223,6 +230,7 @@ with tab_run:
                     max_reviews=max_reviews,
                     max_emails=max_emails,
                     thresholds=thresholds,
+                    inter_item_delay=inter_item_delay,
                     progress_callback=update_log,
                 )
                 st.session_state.last_run_stats = result
