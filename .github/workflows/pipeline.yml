@@ -48,7 +48,11 @@ jobs:
         run: |
           python -c "
           import pandas, streamlit, google.genai
+          from dotenv import load_dotenv
+          print('All runtime imports OK')
+          # crewai is in requirements but only used by agents.py/tasks.py (not imported at startup)
           from crewai import Agent, Task, LLM
+          print('CrewAI import OK')
           print('All imports OK')
           "
 
