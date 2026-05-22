@@ -13,7 +13,7 @@ on:
 # ── Global env ────────────────────────────────────────────────────────────────
 env:
   PYTHON_VERSION: "3.11"
-  HF_SPACE_REPO_ID: "GauthamJ007/agentic-feedback-analyzer"
+  HF_SPACE_REPO_ID: "GauthamJ007/edureka-agentic-ai-capstone"
 
 # ── Jobs ──────────────────────────────────────────────────────────────────────
 jobs:

@@ -15,7 +15,7 @@ from huggingface_hub import HfApi, create_repo
 from huggingface_hub.utils import RepositoryNotFoundError
 
 # ── CONFIG ─────────────────────────────────────────────────────────────────────
-SPACE_REPO_ID = "GauthamJ007/agentic-feedback-analyzer"
+SPACE_REPO_ID = "GauthamJ007/edureka-agentic-ai-capstone"
 SPACE_SDK     = "docker"
 
 # Repo root: one level up from this script (hosting/)
