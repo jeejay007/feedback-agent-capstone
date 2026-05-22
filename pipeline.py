@@ -38,9 +38,11 @@ METRICS_FIELDS = [
 
 # ── LLM call with retry ────────────────────────────────────────────────────────
 
-def _call_llm(prompt: str, max_retries: int = 3) -> str:
+def _call_llm(prompt: str, max_retries: int = 5) -> str:
     """Single Gemini API call with exponential backoff on 429."""
     client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
+    # Throttle: 4s between calls keeps well under 15 RPM free-tier limit
+    time.sleep(int(os.getenv("LLM_CALL_DELAY", "4")))
     for attempt in range(max_retries):
         try:
             response = client.models.generate_content(
@@ -51,11 +53,12 @@ def _call_llm(prompt: str, max_retries: int = 3) -> str:
         except Exception as e:
             msg = str(e)
             if "429" in msg or "RESOURCE_EXHAUSTED" in msg or "quota" in msg.lower():
-                # Extract suggested retry delay from error, cap at 90s
-                wait = 30 * (attempt + 1)
+                # Extract suggested retry delay from error message, else exponential backoff
                 retry_match = re.search(r"retryDelay.*?(\d+)s", msg)
                 if retry_match:
-                    wait = min(int(retry_match.group(1)) + 2, 90)
+                    wait = min(int(retry_match.group(1)) + 5, 120)
+                else:
+                    wait = min(30 * (2 ** attempt), 120)
                 logger.warning("Rate limit (attempt %d/%d). Waiting %ds...", attempt + 1, max_retries, wait)
                 time.sleep(wait)
             else:
@@ -286,7 +289,7 @@ def run_pipeline(
     max_reviews: int = 5,
     max_emails: int = 3,
     thresholds: dict = None,
-    inter_item_delay: int = 5,
+    inter_item_delay: int = 10,
     progress_callback=None,
 ) -> dict:
     if thresholds is None:
