@@ -1,0 +1,221 @@
+name: Feedback Agent CI/CD Pipeline
+
+# ── Triggers ─────────────────────────────────────────────────────────────────
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:         # manual trigger from GitHub UI
+  schedule:
+    - cron: "0 3 * * 1"     # every Monday 03:00 UTC — weekly health check
+
+# ── Global env ────────────────────────────────────────────────────────────────
+env:
+  PYTHON_VERSION: "3.11"
+  HF_SPACE_REPO_ID: "GauthamJ007/agentic-feedback-analyzer"
+
+# ── Jobs ──────────────────────────────────────────────────────────────────────
+jobs:
+
+  # ── 1. Lint & Import Check ────────────────────────────────────────────────
+  lint:
+    name: "Step 1 · Lint & Import Check"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4.2.2
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5.6.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt -q
+          pip install flake8 -q
+
+      - name: Lint Python files
+        run: |
+          flake8 app.py pipeline.py agents.py tasks.py hosting/ \
+            --max-line-length=120 --ignore=E501,W503,E402 --count --statistics || true
+
+      - name: Check all imports resolve
+        run: |
+          python -c "
+          import pandas, streamlit, google.genai
+          from crewai import Agent, Task, LLM
+          print('All imports OK')
+          "
+
+  # ── 2. Validate Input Data ────────────────────────────────────────────────
+  validate_data:
+    name: "Step 2 · Validate Input Data Files"
+    runs-on: ubuntu-latest
+    needs: lint
+
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pandas -q
+
+      - name: Validate CSV structure and row counts
+        run: |
+          python -c "
+          import pandas as pd, sys
+
+          # App store reviews
+          reviews = pd.read_csv('data/app_store_reviews.csv')
+          assert len(reviews) >= 20, f'Expected >= 20 reviews, got {len(reviews)}'
+          required_cols = ['review_id','platform','rating','review_text','user_name','date','app_version']
+          for col in required_cols:
+              assert col in reviews.columns, f'Missing column: {col}'
+          print(f'app_store_reviews.csv: {len(reviews)} rows, {len(reviews.columns)} cols — OK')
+
+          # Support emails
+          emails = pd.read_csv('data/support_emails.csv')
+          assert len(emails) >= 10, f'Expected >= 10 emails, got {len(emails)}'
+          required_cols = ['email_id','subject','body','sender_email','timestamp']
+          for col in required_cols:
+              assert col in emails.columns, f'Missing column: {col}'
+          print(f'support_emails.csv: {len(emails)} rows, {len(emails.columns)} cols — OK')
+
+          # Ground truth labels
+          expected = pd.read_csv('data/expected_classifications.csv')
+          assert len(expected) >= 30, f'Expected >= 30 labels, got {len(expected)}'
+          required_cols = ['source_id','source_type','category','priority']
+          for col in required_cols:
+              assert col in expected.columns, f'Missing column: {col}'
+          valid_cats = {'Bug', 'Feature Request', 'Praise', 'Complaint', 'Spam'}
+          invalid = set(expected['category'].unique()) - valid_cats
+          assert not invalid, f'Invalid categories in ground truth: {invalid}'
+          print(f'expected_classifications.csv: {len(expected)} rows — OK')
+
+          print('All data validation checks passed.')
+          "
+
+  # ── 3. Smoke Test Pipeline (offline, no LLM calls) ───────────────────────
+  smoke_test:
+    name: "Step 3 · Smoke Test (structure + JSON extraction)"
+    runs-on: ubuntu-latest
+    needs: validate_data
+
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt -q
+
+      - name: Test pipeline imports and utilities (no LLM calls)
+        run: |
+          python -c "
+          import sys, os
+          sys.path.insert(0, '.')
+
+          # Test _extract_json with all 3 extraction methods
+          from pipeline import _extract_json
+
+          # Method 1: clean JSON
+          r1 = _extract_json('{\"category\": \"Bug\", \"confidence_score\": 92}')
+          assert r1['category'] == 'Bug', f'Method 1 failed: {r1}'
+          print('JSON extraction method 1 (direct): OK')
+
+          # Method 2: markdown-wrapped JSON
+          r2 = _extract_json('\`\`\`json\n{\"category\": \"Spam\", \"confidence_score\": 99}\n\`\`\`')
+          assert r2['category'] == 'Spam', f'Method 2 failed: {r2}'
+          print('JSON extraction method 2 (markdown): OK')
+
+          # Method 3: embedded JSON with preamble
+          r3 = _extract_json('Sure! Here is the result: {\"category\": \"Praise\", \"confidence_score\": 88}')
+          assert r3['category'] == 'Praise', f'Method 3 failed: {r3}'
+          print('JSON extraction method 3 (greedy regex): OK')
+
+          # Test CSV loading functions
+          from pipeline import load_app_store_reviews, load_support_emails
+          reviews = load_app_store_reviews()
+          assert len(reviews) >= 1, 'No reviews loaded'
+          emails = load_support_emails()
+          assert len(emails) >= 1, 'No emails loaded'
+          print(f'Data loading: {len(reviews)} reviews, {len(emails)} emails — OK')
+
+          # Test text formatters
+          from pipeline import format_review_text, format_email_text
+          sample_review = reviews[0]
+          text = format_review_text(sample_review)
+          assert sample_review['review_id'] in text, 'review_id not in formatted text'
+          sample_email = emails[0]
+          text = format_email_text(sample_email)
+          assert sample_email['email_id'] in text, 'email_id not in formatted text'
+          print('Text formatters: OK')
+
+          print('All smoke tests passed.')
+          "
+
+      - name: Test Streamlit app parses without error
+        run: |
+          python -c "
+          import ast, sys
+          with open('app.py') as f:
+              src = f.read()
+          ast.parse(src)
+          print('app.py: syntax OK')
+          with open('pipeline.py') as f:
+              src = f.read()
+          ast.parse(src)
+          print('pipeline.py: syntax OK')
+          with open('agents.py') as f:
+              src = f.read()
+          ast.parse(src)
+          print('agents.py: syntax OK')
+          "
+
+  # ── 4. Deploy to Hugging Face Space ──────────────────────────────────────
+  deploy:
+    name: "Step 4 · Deploy to HF Space"
+    runs-on: ubuntu-latest
+    needs: smoke_test
+    if: |
+      github.event_name != 'pull_request' &&
+      github.ref == 'refs/heads/main'
+
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install huggingface_hub
+        run: pip install huggingface_hub -q
+
+      - name: Push files to HF Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python hosting/deploy_to_hf.py
+
+      - name: Print deployment URL
+        run: |
+          echo "========================================"
+          echo "App deployed successfully!"
+          echo "https://huggingface.co/spaces/${{ env.HF_SPACE_REPO_ID }}"
+          echo "========================================"
